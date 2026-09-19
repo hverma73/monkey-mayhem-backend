@@ -1,0 +1,17 @@
+# Secrets & environment — never commit credentials (use .env.example instead)
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Sample / imported member data may contain PII
+sample-members.json
+
+# Executable build output (npm run build:exe)
+build/
+release/
+
+# OS noise
+.DS_Store
