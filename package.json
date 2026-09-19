@@ -6,11 +6,12 @@
   "main": "server.js",
   "scripts": {
   "start": "node server.js",
-  "build": "echo 'No build step required'",
+  "build": "echo 'No build step needed for Node backend'",
   "dev": "node --watch server.js",
   "seed": "node seed.js",
-  "test": "node --test"
-  },
+  "test": "node --test",
+  "build:exe": "echo 'Skipping exe build on Hostinger'"
+ },
   "pkg": {
     "assets": [
       "assets/fonts/*.ttf",
