@@ -9,7 +9,8 @@
   "build": "echo 'No build step needed for Node backend'",
   "dev": "node --watch server.js",
   "seed": "node seed.js",
-  "test": "node --test"
+  "test": "node --test",
+  "build:exe": "node scripts/build-exe.mjs"
  },
   "pkg": {
     "assets": [
