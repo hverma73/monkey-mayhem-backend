@@ -6,12 +6,11 @@
   "main": "server.js",
   "scripts": {
   "start": "node server.js",
-  "build": "echo 'No build step needed for Node backend'",
+  "build": "echo 'No build step required'",
   "dev": "node --watch server.js",
   "seed": "node seed.js",
-  "test": "node --test",
-  "build:exe": "node scripts/build-exe.mjs"
- },
+  "test": "node --test"
+  },
   "pkg": {
     "assets": [
       "assets/fonts/*.ttf",
