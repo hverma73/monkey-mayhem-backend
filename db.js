@@ -2,16 +2,13 @@
 // resolves the .env location correctly in dev AND inside a packaged executable.
 import './lib/env.js';
 import pg from 'pg';
+import { readDbConfig } from './lib/dbConfig.js';
 
 const { Pool } = pg;
 
 // A single shared pool for the whole app.
 export const pool = new Pool({
-  host: process.env.PGHOST,
-  port: Number(process.env.PGPORT) || 5432,
-  database: process.env.PGDATABASE,
-  user: process.env.PGUSER,
-  password: process.env.PGPASSWORD,
+  ...readDbConfig(),
 });
 
 pool.on('error', (err) => {

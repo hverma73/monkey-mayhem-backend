@@ -127,6 +127,7 @@ PGPORT=5432
 PGDATABASE=postgresdb
 PGUSER=postgres
 PGPASSWORD=your-postgres-password-here
+PGSSL=
 
 # --- Auth: use a long random string (e.g. from a password generator) ---
 JWT_SECRET=put-a-long-random-secret-here
