@@ -44,6 +44,7 @@ if (process.env.JWT_SECRET === JWT_PLACEHOLDER) {
 }
 
 const app = express();
+if (process.env.TRUST_PROXY === '1') app.set('trust proxy', 1);
 
 app.use(cors({
   origin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
@@ -92,6 +93,13 @@ app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found.' }));
 const CLIENT_DIR = path.join(__dirname, 'client');
 if (fs.existsSync(path.join(CLIENT_DIR, 'index.html'))) {
   app.use(express.static(CLIENT_DIR));
+  // Basic Auth protects the hosted Apache site; it does not exist on the
+  // localhost-only packaged executable, so the exe serves this path directly.
+  const ADMIN = (process.env.ADMIN_PATH || '').replace(/^\/+|\/+$/g, '');
+  if (ADMIN) {
+    app.get([`/${ADMIN}`, `/${ADMIN}/*`], (_req, res) =>
+      res.sendFile(path.join(CLIENT_DIR, ADMIN, 'index.html')));
+  }
   // SPA fallback: the frontend uses BrowserRouter, so a refresh/deep link on
   // /members/5 or /payments must serve index.html and let React route it.
   // API paths are excluded so unknown /api/* still return JSON 404s.

@@ -130,10 +130,13 @@ PGPASSWORD=your-postgres-password-here
 
 # --- Auth: use a long random string (e.g. from a password generator) ---
 JWT_SECRET=put-a-long-random-secret-here
-JWT_EXPIRES_IN=12h
+# 8h is a reasonable maximum for a staff session.
+JWT_EXPIRES_IN=8h
 
 # --- Server ---
 PORT=9000
+TRUST_PROXY=
+ADMIN_PATH=
 
 # --- Google reviews on the public website (optional) ---
 # Leave blank to show the site's own curated quotes instead.

@@ -1,5 +1,6 @@
 import express from 'express';
 import { fetchPlace, readConfig } from '../lib/googlePlaces.js';
+import { makeThrottle } from '../lib/rateLimit.js';
 
 const router = express.Router();
 
@@ -19,33 +20,7 @@ const router = express.Router();
 const BURST = 30;
 const REFILL_MS = 2 * 1000; // one more read every two seconds
 const MAX_TRACKED_IPS = 5000;
-
-const buckets = new Map(); // ip -> { tokens, last }
-
-function throttled(ip) {
-  const now = Date.now();
-  const seen = buckets.get(ip);
-
-  if (!seen) {
-    if (buckets.size >= MAX_TRACKED_IPS) {
-      for (const [key, val] of buckets) {
-        if (now - val.last >= BURST * REFILL_MS) buckets.delete(key);
-      }
-    }
-    buckets.set(ip, { tokens: BURST - 1, last: now });
-    return false;
-  }
-
-  const refilled = Math.min(BURST, seen.tokens + (now - seen.last) / REFILL_MS);
-  if (refilled < 1) {
-    seen.tokens = refilled;
-    seen.last = now;
-    return true;
-  }
-  seen.tokens = refilled - 1;
-  seen.last = now;
-  return false;
-}
+const throttled = makeThrottle({ burst: BURST, refillMs: REFILL_MS, maxTrackedIps: MAX_TRACKED_IPS });
 
 // Single-flight: while one upstream call is in the air, every other request
 // waits on the SAME promise instead of starting its own. This is not caching —

@@ -2,6 +2,7 @@ import express from 'express';
 import { query } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { cleanLeadInput } from '../lib/leads.js';
+import { makeThrottle } from '../lib/rateLimit.js';
 
 const router = express.Router();
 
@@ -25,36 +26,7 @@ const router = express.Router();
 const BURST = 5;
 const REFILL_MS = 2 * 60 * 1000; // one more submission every two minutes
 const MAX_TRACKED_IPS = 5000;    // bound the map so it can't grow unchecked
-
-const buckets = new Map(); // ip -> { tokens, last }
-
-function throttled(ip) {
-  const now = Date.now();
-  const seen = buckets.get(ip);
-
-  if (!seen) {
-    // Sweep fully-refilled (i.e. idle) entries before adding a new one, so a
-    // long tail of one-off visitors can't accumulate. Doing it here means no
-    // timer is needed — the packaged exe's event loop stays quiet.
-    if (buckets.size >= MAX_TRACKED_IPS) {
-      for (const [key, val] of buckets) {
-        if (now - val.last >= BURST * REFILL_MS) buckets.delete(key);
-      }
-    }
-    buckets.set(ip, { tokens: BURST - 1, last: now });
-    return false;
-  }
-
-  const refilled = Math.min(BURST, seen.tokens + (now - seen.last) / REFILL_MS);
-  if (refilled < 1) {
-    seen.tokens = refilled; // keep the partial credit; don't reset the clock
-    seen.last = now;
-    return true;
-  }
-  seen.tokens = refilled - 1;
-  seen.last = now;
-  return false;
-}
+const throttled = makeThrottle({ burst: BURST, refillMs: REFILL_MS, maxTrackedIps: MAX_TRACKED_IPS });
 
 // POST /api/leads  - PUBLIC. An enquiry from the website's contact form or
 // chatbot. Returns a bare acknowledgement: the visitor has no use for the row,
