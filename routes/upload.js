@@ -2,7 +2,7 @@ import express from 'express';
 import { pool, query } from '../db.js';
 import { formatMembershipNo } from '../lib/members.js';
 import { isPackageAllowedForGender, validatePaymentBound } from '../lib/billing.js';
-import { rowsToRecords, buildTemplateWorkbook } from '../lib/importExcel.js';
+import { rowsToRecords, buildTemplateWorkbook, classifyMobileMatch } from '../lib/importExcel.js';
 
 const router = express.Router();
 
@@ -18,14 +18,18 @@ function importError(message) {
  * Insert an array of member records (same shape as the create endpoint).
  * Each record is inserted in its own transaction so one bad row doesn't sink
  * the batch. `_row` (source spreadsheet row) overrides the reported row number.
- * Returns { received, inserted, failed, errors }.
+ * Returns { received, inserted, failed, errors, warnings }, where warnings
+ * are rows that imported but share Mobile No 1 with a member of a different
+ * name.
  */
 async function importRecords(records, executive) {
   let inserted = 0;
   const errors = [];
+  const warnings = [];
+  // A mobile maps to every member imported on it: siblings often share one.
+  const batchMobiles = new Map(); // mobile → [{ full_name, row }]
   // Mobiles / typed card numbers already imported in THIS batch (recorded on
   // success only, so a failed row doesn't block a later duplicate of itself).
-  const batchMobiles = new Map();
   const batchMembershipNos = new Map();
 
   for (let i = 0; i < records.length; i++) {
@@ -48,19 +52,26 @@ async function importRecords(records, executive) {
       // Duplicate guards. The designed flow is "fix the bad rows, re-upload
       // the file" — without these, every previously-successful row would
       // import again (same person twice, two receipts, two card numbers).
-      const dupRow = batchMobiles.get(String(m.mobile_no1));
-      if (dupRow) throw importError(`Same Mobile No 1 as row ${dupRow} of this file.`);
-      const existing = (await client.query(
+      // Identity is Mobile No 1 + Full Name: siblings registered on a parent's
+      // phone are different people, so a shared mobile only warns.
+      const inBatch = classifyMobileMatch(m.full_name, batchMobiles.get(String(m.mobile_no1)));
+      if (inBatch?.duplicate) {
+        throw importError(`Same Full Name and Mobile No 1 as row ${inBatch.duplicate.row} of this file.`);
+      }
+      const inDb = classifyMobileMatch(m.full_name, (await client.query(
         `SELECT m.full_name, o.membership_no FROM member m
          LEFT JOIN office_use o USING (member_id)
-         WHERE m.mobile_no1 = $1 LIMIT 1`,
+         WHERE m.mobile_no1 = $1 ORDER BY m.member_id`,
         [m.mobile_no1]
-      )).rows[0];
-      if (existing) {
+      )).rows);
+      if (inDb?.duplicate) {
+        const existing = inDb.duplicate;
         throw importError(
           `A member with mobile ${m.mobile_no1} already exists (${existing.full_name}${existing.membership_no ? ', ' + existing.membership_no : ''}) — remove this row if it was already imported, or add them via the Add Member form.`
         );
       }
+      // Prefer the in-file match: "row N of this file" is easier to act on.
+      const sharedWith = inBatch?.sharedWith || inDb?.sharedWith;
       if (typedNo) {
         const dupNoRow = batchMembershipNos.get(typedNo);
         if (dupNoRow) throw importError(`Membership No ${typedNo} is also used on row ${dupNoRow} of this file.`);
@@ -141,7 +152,12 @@ async function importRecords(records, executive) {
            RETURNING id, amount_paid, amount`,
           [memberId, ms.start_date || null, ms.amount_paid ?? null, ms.package_id]
         );
-        // Record the paid amount as a payment receipt (executive = importer).
+        // Record the paid amount as a payment receipt (executive = importer),
+        // dated when the period began rather than the upload day — imports
+        // migrate existing members, and an import-day date would book months
+        // of past fees as today's takings. Capped at today (a future-dated
+        // plan's receipt can't be in the future: payment_paid_on_not_future),
+        // and tagged so imported receipts can be found later.
         const row = msResult.rows[0];
         if (row && Number(row.amount_paid) > 0) {
           // 10× typo guard — a phone number pasted into the Amount Paid column
@@ -149,8 +165,9 @@ async function importRecords(records, executive) {
           const bound = validatePaymentBound({ paid_amount: row.amount_paid, total_amount: row.amount });
           if (!bound.ok) throw importError(bound.error);
           await client.query(
-            `INSERT INTO payment (membership_id, member_id, paid_amount, pay_mode, executive)
-             VALUES ($1, $2, $3, 'Cash', $4)`,
+            `INSERT INTO payment (membership_id, member_id, paid_amount, pay_mode, executive, paid_on, details)
+             SELECT ms.id, $2::int, $3::numeric, 'Cash', $4::text, LEAST(ms.start_date, CURRENT_DATE), 'Excel import'
+             FROM membership ms WHERE ms.id = $1`,
             [row.id, memberId, row.amount_paid, executive]
           );
         }
@@ -158,8 +175,15 @@ async function importRecords(records, executive) {
 
       await client.query('COMMIT');
       inserted++;
-      batchMobiles.set(String(m.mobile_no1), rowNo);
+      const mobileKey = String(m.mobile_no1);
+      batchMobiles.set(mobileKey, [...(batchMobiles.get(mobileKey) || []), { full_name: m.full_name, row: rowNo }]);
       if (typedNo) batchMembershipNos.set(typedNo, rowNo);
+      if (sharedWith) {
+        const who = sharedWith.row
+          ? `${sharedWith.full_name} (row ${sharedWith.row} of this file)`
+          : `${sharedWith.full_name}${sharedWith.membership_no ? ', ' + sharedWith.membership_no : ''}`;
+        warnings.push({ row: rowNo, reason: `Mobile No 1 is shared with ${who} — imported as a separate member. If this is the same person under a corrected name, delete this new record.` });
+      }
     } catch (err) {
       // ROLLBACK can itself throw on a dead connection — swallow that so the
       // original row error is what gets reported, not an escaped rejection.
@@ -173,7 +197,7 @@ async function importRecords(records, executive) {
     }
   }
 
-  return { received: records.length, inserted, failed: errors.length, errors };
+  return { received: records.length, inserted, failed: errors.length, errors, warnings };
 }
 
 /*
@@ -283,6 +307,7 @@ router.post(
         inserted: result.inserted,
         failed: errors.length,
         errors,
+        warnings: result.warnings,
       });
     } catch (err) {
       if (err.expected) return res.status(400).json({ error: err.message });

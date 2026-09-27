@@ -11,6 +11,8 @@ import {
   cellToGender,
   normalizeBloodGroup,
   dobError,
+  normalizeName,
+  classifyMobileMatch,
   resolvePackage,
   rowsToRecords,
   buildTemplateWorkbook,
@@ -142,9 +144,27 @@ test('cellToBool / cellToNumber: forgiving input, loud failure', () => {
 test('resolvePackage: by ID, by case-insensitive name, and clear misses', () => {
   assert.equal(resolvePackage('2', PACKAGES).name, '3 Months');
   assert.equal(resolvePackage('ladies special', PACKAGES).package_id, 5);
+  assert.equal(resolvePackage('Ladies\u00a0 Special ', PACKAGES).package_id, 5);
   assert.equal(resolvePackage('', PACKAGES), null);
   assert.throws(() => resolvePackage('99', PACKAGES), /Unknown package ID 99/);
   assert.throws(() => resolvePackage('Gold', PACKAGES), /Unknown package "Gold"/);
+});
+
+test('normalizeName: case and stray spaces do not make a different person', () => {
+  assert.equal(normalizeName('  Talha Bin  Mohammmed Manna '), 'talha bin mohammmed manna');
+  assert.equal(normalizeName('AYAN ANFAL'), normalizeName('Ayan Anfal'));
+  assert.equal(normalizeName(null), '');
+});
+
+test('classifyMobileMatch: same name is a re-upload, a sibling on the same phone is not', () => {
+  const hamna = { full_name: 'Hamna Abdul Wajeed', membership_no: 'MM-0037' };
+  assert.equal(classifyMobileMatch('Hamna Abdul Wajeed', []), null);
+  assert.equal(classifyMobileMatch('Hamna Abdul Wajeed', undefined), null);
+  assert.deepEqual(classifyMobileMatch('hamna  abdul wajeed', [hamna]), { duplicate: hamna });
+  assert.deepEqual(classifyMobileMatch('Haya Abdul Wajeed', [hamna]), { sharedWith: hamna });
+  const haya = { full_name: 'Haya Abdul Wajeed' };
+  assert.deepEqual(classifyMobileMatch('Zara Abdul Wajeed', [hamna, haya]), { sharedWith: hamna });
+  assert.deepEqual(classifyMobileMatch('Haya Abdul Wajeed', [hamna, haya]), { duplicate: haya });
 });
 
 test('rowsToRecords: a full row maps to the create-member record shape', () => {
