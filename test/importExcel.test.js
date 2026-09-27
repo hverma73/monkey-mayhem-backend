@@ -9,6 +9,8 @@ import {
   cellToBool,
   cellToNumber,
   cellToGender,
+  normalizeBloodGroup,
+  dobError,
   resolvePackage,
   rowsToRecords,
   buildTemplateWorkbook,
@@ -73,6 +75,53 @@ test('cellToGender: normalizes M/F/case variants, rejects the rest', () => {
   assert.equal(cellToGender('OTHER'), 'Other');
   assert.equal(cellToGender(''), '');
   assert.throws(() => cellToGender('boy'), /not Male\/Female\/Other/);
+});
+
+test('normalizeBloodGroup: fixes the "tve" typo, spacing, and sign variants', () => {
+  assert.equal(normalizeBloodGroup('B tve'), 'B+ve');
+  assert.equal(normalizeBloodGroup('O tve'), 'O+ve');
+  assert.equal(normalizeBloodGroup('AB tve'), 'AB+ve');
+  assert.equal(normalizeBloodGroup('Atve'), 'A+ve');
+  assert.equal(normalizeBloodGroup('AB -ve'), 'AB-ve');
+  assert.equal(normalizeBloodGroup('o -ve'), 'O-ve');
+  assert.equal(normalizeBloodGroup('B-ve'), 'B-ve');
+  assert.equal(normalizeBloodGroup('o+'), 'O+ve');
+  assert.equal(normalizeBloodGroup('A positive'), 'A+ve');
+  assert.equal(normalizeBloodGroup('b negative'), 'B-ve');
+  assert.equal(normalizeBloodGroup('AB+ve'), 'AB+ve');
+  assert.equal(normalizeBloodGroup('O'), 'O');
+  assert.equal(normalizeBloodGroup(''), null);
+  assert.equal(normalizeBloodGroup(null), null);
+  assert.equal(normalizeBloodGroup('  NA '), 'NA');
+});
+
+test('dobError: flags future and implausible ages, passes real ones', () => {
+  const today = new Date(Date.UTC(2026, 8, 27)); // fixed for the test
+  assert.equal(dobError('1995-08-15', today), null);
+  assert.equal(dobError('2014-05-12', today), null); // ~12, a real kid member
+  assert.equal(dobError('', today), null);
+  assert.equal(dobError(null, today), null);
+  assert.match(dobError('2027-01-01', today), /in the future/);
+  assert.match(dobError('2024-01-25', today), /2 years old/); // Avir case (~2)
+  assert.match(dobError('2025-06-01', today), /check the year/); // toddler (~1)
+  assert.equal(dobError('2020-10-10', today), null); // ~5: allowed
+  assert.match(dobError('1900-01-01', today), /check the year/); // too old
+});
+
+test('rowsToRecords: normalises blood group and rejects an impossible DOB', () => {
+  const { records, errors } = rowsToRecords(
+    headerRow(),
+    [
+      dataRow(2, { full_name: 'Blood Fix', mobile_no1: '9111111111', blood_group: 'B tve', date_of_birth: '1998-03-03' }),
+      dataRow(3, { full_name: 'Future Baby', mobile_no1: '9222222222', date_of_birth: '2099-01-01' }),
+    ],
+    PACKAGES,
+  );
+  assert.equal(records.length, 1);
+  assert.equal(records[0].member.blood_group, 'B+ve');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].row, 3);
+  assert.match(errors[0].reason, /Date of Birth: .*in the future/);
 });
 
 test('cellToBool / cellToNumber: forgiving input, loud failure', () => {
