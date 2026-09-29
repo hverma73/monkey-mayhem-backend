@@ -1,7 +1,7 @@
 import express from 'express';
 import { pool, query } from '../db.js';
 import { pauseBudgetForPlan, validatePauseStart, cappedPauseDays, validatePauseCoverage, isPackageAllowedForGender, validatePaymentBound } from '../lib/billing.js';
-import { formatMembershipNo, expiryWindowDays } from '../lib/members.js';
+import { formatMembershipNo, expiryWindowDays, memberListFilter, memberExportNames } from '../lib/members.js';
 
 const router = express.Router();
 
@@ -249,21 +249,11 @@ router.get('/calendar', async (req, res) => {
  *  /api/members?search=bru&status=Active
  * ------------------------------------------------------------------ */
 router.get('/', async (req, res) => {
-  const { search = '', status = '' } = req.query;
-  const conditions = [];
-  const params = [];
-
-  if (search) {
-    params.push(`%${search.toLowerCase()}%`);
-    conditions.push(`lower(full_name) LIKE $${params.length}`);
-  }
-  if (status && ['Active', 'Upcoming', 'Paused', 'Inactive', 'No Plan'].includes(status)) {
-    params.push(status);
-    conditions.push(`status = $${params.length}`);
-  }
-
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   try {
+    // Inside the try: a crafted query (e.g. ?search[toString]=x) makes String()
+    // throw, and Express 4 doesn't catch async throws — outside the try that
+    // rejection would take the whole API process down.
+    const { where, params } = memberListFilter(req.query);
     const { rows } = await query(
       `SELECT member_id, full_name, age, gender, mobile_no1, email, blood_group,
               membership_no, package_name, start_date, end_date, days_to_expiry,
@@ -278,6 +268,68 @@ router.get('/', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Could not load members.' });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ *  Export the All Members roster to .xlsx — same search + status filter
+ *  as the list above, so "Active", "Inactive", "No plan" only download
+ *  those members, and "All statuses" downloads everyone.
+ *  /api/members/export?search=bru&status=Inactive
+ *  (Declared before /:id so "export" is never read as a member id.)
+ * ------------------------------------------------------------------ */
+router.get('/export', async (req, res) => {
+  try {
+    const { where, params } = memberListFilter(req.query);
+    // Dates via to_char so the cells hold the calendar date, not a
+    // timezone-shifted JS Date.
+    const { rows } = await query(
+      `SELECT member_id, full_name, age, gender, mobile_no1, email, blood_group,
+              membership_no, package_name,
+              to_char(start_date,'YYYY-MM-DD') AS start_date,
+              to_char(end_date,'YYYY-MM-DD')   AS end_date,
+              days_to_expiry, status
+       FROM member_overview ${where}
+       ORDER BY full_name`,
+      params
+    );
+    const today = new Date().toISOString().slice(0, 10);
+    const { sheet, filename } = memberExportNames(req.query.status, today);
+
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet(sheet);
+    ws.columns = [
+      { header: 'Membership No.', key: 'membership_no', width: 15 },
+      { header: 'Member', key: 'full_name', width: 26 },
+      { header: 'Age', key: 'age', width: 7 },
+      { header: 'Gender', key: 'gender', width: 10 },
+      { header: 'Phone', key: 'mobile_no1', width: 16 },
+      { header: 'Email', key: 'email', width: 26 },
+      { header: 'Blood Group', key: 'blood_group', width: 12 },
+      { header: 'Package', key: 'package_name', width: 18 },
+      { header: 'Start Date', key: 'start_date', width: 13 },
+      { header: 'Expires', key: 'end_date', width: 13 },
+      { header: 'Days Left', key: 'days_left', width: 10 },
+      { header: 'Status', key: 'status', width: 11 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    for (const r of rows) {
+      ws.addRow({
+        ...r,
+        membership_no: r.membership_no || formatMembershipNo(r.member_id),
+        age: r.age == null ? null : Number(r.age),
+        days_left: r.days_to_expiry == null ? null : Number(r.days_to_expiry),
+      });
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) res.status(500).json({ error: 'Could not export members.' });
   }
 });
 
